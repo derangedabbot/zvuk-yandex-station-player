@@ -1,0 +1,49 @@
+query getArtists(
+  $ids: [ID!]!
+  $withPopTracks: Boolean = true
+  $withReleases: Boolean = false
+  $tracksLimit: Int = 30
+  $releasesLimit: Int = 50
+) {
+  getArtists(ids: $ids) {
+    id
+    title
+    image {
+      src
+    }
+    popularTracks(limit: $tracksLimit) @include(if: $withPopTracks) {
+      id
+      title
+      duration
+      explicit
+      artists {
+        id
+        title
+        image {
+          src
+        }
+      }
+      release {
+        id
+        title
+        image {
+          src
+        }
+      }
+    }
+    releases(limit: $releasesLimit) @include(if: $withReleases) {
+      id
+      title
+      date
+      type
+      explicit
+      image {
+        src
+      }
+      artists {
+        id
+        title
+      }
+    }
+  }
+}

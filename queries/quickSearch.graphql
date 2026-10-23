@@ -1,0 +1,110 @@
+query quickSearch($query: String, $limit: Int, $searchSessionId: String) {
+  quickSearch(query: $query, limit: $limit, searchSessionId: $searchSessionId) {
+    searchSessionId
+    content {
+      __typename
+      ... on Track {
+        id
+        title
+        duration
+        explicit
+        artists {
+          id
+          title
+          image {
+            src
+          }
+        }
+        release {
+          id
+          title
+          date
+          type
+          image {
+            src
+          }
+          explicit
+          artists {
+            id
+            title
+            image {
+              src
+            }
+          }
+        }
+      }
+      ... on Artist {
+        id
+        title
+        image {
+          src
+        }
+      }
+      ... on Release {
+        id
+        title
+        date
+        type
+        image {
+          src
+        }
+        explicit
+        artists {
+          id
+          title
+          image {
+            src
+          }
+        }
+      }
+      ... on Playlist {
+        id
+        title
+        isPublic
+        description
+        duration
+        image {
+          src
+        }
+      }
+      ... on Episode {
+        id
+        title
+        availability
+        publicationDate
+        duration
+        podcast {
+          title
+        }
+        image {
+          src
+        }
+      }
+      ... on Podcast {
+        id
+        title
+        explicit
+        image {
+          src
+        }
+        authors {
+          id
+          name
+        }
+      }
+      ... on Profile {
+        id
+        name
+        description
+        image {
+          src
+        }
+      }
+      ... on Book {
+        id
+        title
+        authorNames
+      }
+    }
+  }
+}

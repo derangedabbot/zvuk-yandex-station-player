@@ -1,0 +1,28 @@
+query getPersonalWave(
+  $contentInput: PersonalWaveContentInput
+  $first: PositiveInt! = 10
+  $options: PersonalWaveOptions
+  $waveInput: WaveInput
+  $waveSrc: MagicSource
+) {
+  personalWaveContent(
+    contentInput: $contentInput
+    first: $first
+    options: $options
+    waveInput: $waveInput
+    waveSrc: $waveSrc
+  ) {
+    id
+    title
+    duration
+    explicit
+    artists {
+      id
+      title
+    }
+    release {
+      id
+      title
+    }
+  }
+}

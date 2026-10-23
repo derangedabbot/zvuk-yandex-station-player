@@ -1,0 +1,31 @@
+query getStream($ids: [ID!]!) {
+  mediaContents(ids: $ids) {
+    __typename
+    ... on Track {
+      stream {
+        expire
+        expireDelta
+        flac
+        flacdrm
+        high
+        mid
+      }
+    }
+    ... on Episode {
+      stream {
+        expire
+        expireDelta
+        high
+        mid
+      }
+    }
+    ... on Chapter {
+      stream {
+        expire
+        expireDelta
+        high
+        mid
+      }
+    }
+  }
+}

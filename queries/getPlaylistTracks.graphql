@@ -1,0 +1,28 @@
+query getPlaylistTracks($id: ID!, $limit: Int = 100, $offset: Int = 0) {
+  playlistTracks(id: $id, limit: $limit, offset: $offset) {
+    id
+    title
+    duration
+    explicit
+    artists {
+      id
+      title
+      image {
+        src
+      }
+    }
+    release {
+      id
+      title
+      date
+      type
+      image {
+        src
+      }
+      artists {
+        id
+        title
+      }
+    }
+  }
+}

@@ -1,0 +1,38 @@
+query getReleases($ids: [ID!]!) {
+  getReleases(ids: $ids) {
+    id
+    title
+    type
+    date
+    image {
+      src
+    }
+    artists {
+      id
+      title
+      image {
+        src
+      }
+    }
+    tracks {
+      id
+      title
+      duration
+      explicit
+      artists {
+        id
+        title
+        image {
+          src
+        }
+      }
+      release {
+        id
+        title
+        image {
+          src
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "zvukd"
+version = "0.1.0"
+edition = "2021"
+description = "Головной (headless) проигрыватель Звука для Яндекс Станции"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process", "sync", "time", "signal", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+# на колонке мало места и RAM — жмём бинарник
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,208 @@
+query search(
+  $query: String
+  $limit: Int = 2
+  $tracks: Boolean = true
+  $trackCursor: Cursor = null
+  $artistsCursor: Cursor = null
+  $releasesCursor: Cursor = null
+  $playlistsCursor: Cursor = null
+  $episodesCursor: Cursor = null
+  $profilesCursor: Cursor = null
+  $podcastsCursor: Cursor = null
+  $artists: Boolean = true
+  $releases: Boolean = true
+  $playlists: Boolean = true
+  $profiles: Boolean = true
+  $books: Boolean = true
+  $episodes: Boolean = true
+  $podcasts: Boolean = true
+) {
+  search(query: $query) {
+    searchId
+    tracks(limit: $limit, cursor: $trackCursor) @include(if: $tracks) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        duration
+        explicit
+        artists {
+          id
+          title
+          image {
+            src
+          }
+        }
+        release {
+          id
+          title
+          date
+          type
+          image {
+            src
+          }
+          explicit
+          artists {
+            id
+            title
+            image {
+              src
+            }
+          }
+        }
+      }
+    }
+    artists(limit: $limit, cursor: $artistsCursor) @include(if: $artists) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        image {
+          src
+        }
+      }
+    }
+    releases(limit: $limit, cursor: $releasesCursor) @include(if: $releases) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        date
+        type
+        image {
+          src
+        }
+        explicit
+        artists {
+          id
+          title
+          image {
+            src
+          }
+        }
+      }
+    }
+    playlists(limit: $limit, cursor: $playlistsCursor)
+      @include(if: $playlists) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        isPublic
+        description
+        duration
+        image {
+          src
+        }
+      }
+    }
+    profiles(limit: $limit, cursor: $profilesCursor) @include(if: $profiles) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        name
+        description
+        image {
+          src
+        }
+      }
+    }
+    books(limit: $limit) @include(if: $books) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        authorNames
+      }
+    }
+    episodes(limit: $limit, cursor: $episodesCursor) @include(if: $episodes) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        availability
+        explicit
+        duration
+        publicationDate
+        image {
+          src
+        }
+        podcast {
+          id
+          title
+          explicit
+          image {
+            src
+          }
+          authors {
+            id
+            name
+          }
+        }
+      }
+    }
+    podcasts(limit: $limit, cursor: $podcastsCursor) @include(if: $podcasts) {
+      page {
+        total
+        prev
+        next
+        cursor
+      }
+      score
+      items {
+        id
+        title
+        explicit
+        image {
+          src
+        }
+        authors {
+          id
+          name
+        }
+      }
+    }
+  }
+}

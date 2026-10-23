@@ -1,0 +1,8 @@
+dist/
+*.token
+config.json
+target/
+*.log
+vendor/
+.DS_Store
+*.swp
