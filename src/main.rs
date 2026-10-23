@@ -227,10 +227,11 @@ impl Core {
             self.player.idx = idx;
             return self.play_track(track).await;
         }
-        // 2) трек уже в очереди — просто переходим на него
+        // 2) трек уже в очереди — просто переходим на него.
+        // Режим потока при этом НЕ выключаем: иначе после клика по треку
+        // в очереди пачка из 10 заканчивалась и поток останавливался.
         if let Some(idx) = self.player.queue.iter().position(|t| t.id == id) {
             let track = self.player.queue[idx].clone();
-            self.flow = false;
             self.player.idx = idx;
             return self.play_track(track).await;
         }
