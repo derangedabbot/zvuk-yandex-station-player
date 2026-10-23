@@ -130,11 +130,24 @@ impl Core {
             Some(t) => self.play_track(t).await,
             None => {
                 if self.flow && self.autoplay {
-                    // пачка потока кончилась — берём следующую
-                    let more = self.api.personal_wave(wave_count()).await?;
-                    let first = more[0].clone();
-                    self.player.set_queue(more);
-                    self.play_track(first).await
+                    // пачка потока кончилась — берём следующую (с двумя повторами:
+                    // сеть на колонке бывает нестабильной)
+                    let mut last: Option<anyhow::Error> = None;
+                    for attempt in 1..=3u8 {
+                        match self.api.personal_wave(wave_count()).await {
+                            Ok(more) if !more.is_empty() => {
+                                let first = more[0].clone();
+                                self.player.set_queue(more);
+                                return self.play_track(first).await;
+                            }
+                            Ok(_) => last = Some(anyhow!("поток вернул пустую пачку")),
+                            Err(e) => last = Some(e),
+                        }
+                        eprintln!("zvukd: поток не догрузился (попытка {attempt}): {last:?}");
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    self.player.stop().await?;
+                    Err(last.unwrap_or_else(|| anyhow!("поток не догрузился")))
                 } else if self.playlist.is_some() {
                     match self.next_playlist_page().await {
                         Some(res) => res,
@@ -384,6 +397,7 @@ impl Core {
             "idx": self.player.idx,
             "position": self.player.position(),
             "playing": self.player.is_alive(),
+            "flow": self.flow,
             "at": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -590,7 +604,7 @@ impl Core {
 }
 
 /// Прочитать сохранённую очередь: треки, номер текущего и позицию в секундах.
-fn load_state() -> Option<(Vec<Track>, usize, u64)> {
+fn load_state() -> Option<(Vec<Track>, usize, u64, bool)> {
     let raw = std::fs::read_to_string(STATE_PATH).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let items = v.get("queue")?.as_array()?;
@@ -600,7 +614,8 @@ fn load_state() -> Option<(Vec<Track>, usize, u64)> {
     }
     let idx = v.get("idx").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
     let position = v.get("position").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    Some((queue, idx, position))
+    let flow = v.get("flow").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    Some((queue, idx, position, flow))
 }
 
 /// Подсветка кольца: мягкое зелёное дыхание, пока играет музыка.
@@ -818,12 +833,15 @@ async fn run_daemon() -> Result<()> {
         playlist: None,
     };
     // восстановить сохранённую очередь (но не начинать играть без просьбы)
-    if let Some((queue, idx, position)) = load_state() {
+    if let Some((queue, idx, position, flow)) = load_state() {
         let n = queue.len();
         initial.player.set_queue(queue);
         initial.player.idx = idx.min(n.saturating_sub(1));
         initial.saved_position = position;
-        println!("zvukd: восстановлена очередь ({n} трек(ов), позиция {position} с)");
+        initial.flow = flow;
+        println!(
+            "zvukd: восстановлена очередь ({n} трек(ов), позиция {position} с, поток: {flow})"
+        );
     }
     let core = Arc::new(Mutex::new(initial));
     println!("zvukd: слушаю {path}");

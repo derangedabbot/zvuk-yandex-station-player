@@ -19,10 +19,17 @@ query getPersonalWave(
     artists {
       id
       title
+      image {
+        src
+      }
     }
     release {
       id
       title
+      date
+      image {
+        src
+      }
     }
   }
 }
