@@ -182,8 +182,17 @@ impl Player {
     pub fn is_finished(&mut self) -> bool {
         if self.station.is_some() {
             let dur = self.duration_ms();
+            if dur == 0 {
+                return false;
+            }
+            // станция ещё показывает предыдущий трек (другая длительность) — «конец» ложный
+            let theirs_s = self.station_duration.lock().map(|d| *d).unwrap_or(0.0);
+            let ours_s = dur as f64 / 1000.0;
+            if theirs_s > 1.0 && (theirs_s - ours_s).abs() > 2.0 {
+                return false;
+            }
             let prog = self.progress_ms.load(Ordering::Relaxed);
-            return dur > 0 && prog + 1500 >= dur && !self.paused;
+            return prog + 1500 >= dur && !self.paused;
         }
         self.current.is_some() && !self.is_alive()
     }

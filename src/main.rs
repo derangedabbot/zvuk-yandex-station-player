@@ -69,6 +69,9 @@ struct Core {
     playlist: Option<PlaylistState>,
     /// Когда последний раз возвращали наш файл после её подмены (не чаще раза в 4 с).
     last_reassert: Option<std::time::Instant>,
+    /// Когда последний раз переключали трек: защита от двойного перехода
+    /// (автопереход по концу + голосовая команда «дальше» давали два «следующий» подряд).
+    last_switch: Option<std::time::Instant>,
 }
 
 impl Core {
@@ -574,7 +577,10 @@ impl Core {
                 }
                 res
             }
-            "next" => self.advance().await,
+            "next" => {
+                self.last_switch = Some(std::time::Instant::now());
+                self.advance().await
+            }
             // Вернуть наш файл на место после того, как её волна успела влезть:
             // переигрываем ТОТ ЖЕ трек с текущей секунды (не следующий).
             // Безусловная переподстановка: нужна после голосовых команд, когда её поток
@@ -856,6 +862,7 @@ async fn run_daemon() -> Result<()> {
         saved_position: 0,
         playlist: None,
         last_reassert: None,
+        last_switch: None,
     };
     // восстановить сохранённую очередь (но не начинать играть без просьбы)
     if let Some((queue, idx, position, flow)) = load_state() {
@@ -938,13 +945,19 @@ async fn run_daemon() -> Result<()> {
             // «угадать» подмену давала либо её волну, либо бесконечные перезапуски.
             // Порядок команд решается в слушателе: он выжидает 3 с, пока её облако
             // ответит и запустит своё, и только потом ставит наш трек — последний выигрывает.
-            if c.autoplay
+            let switch_ready = c
+                .last_switch
+                .map(|t| t.elapsed().as_secs() >= 3)
+                .unwrap_or(true);
+            if switch_ready
+                && c.autoplay
                 && !c.resuming
                 && !c.flow_ducked
                 && !c.player.paused
                 && c.player.current.is_some()
                 && c.player.is_finished()
             {
+                c.last_switch = Some(std::time::Instant::now());
                 let _ = c.advance().await;
             }
         }
