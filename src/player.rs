@@ -59,6 +59,8 @@ pub struct Player {
     /// Состояние Алисы из её же канала: 0 молчит, 1 слушает, 2 говорит, 3 занята.
     /// Нужно, чтобы показывать её состояния самим — штатная подсветка выключена.
     alice_state: Arc<std::sync::Mutex<String>>,
+    /// Играет ли что-нибудь на станции вообще (наш файл или её собственный поток).
+    station_playing: Arc<AtomicBool>,
 }
 
 /// Штатный плеер станции: свой HTTP-раздатчик и канал управления.
@@ -111,6 +113,14 @@ fn led_frame(level: u8) -> Vec<u8> {
     buf
 }
 
+fn led_read(buf: &mut [u8]) -> bool {
+    use std::io::Read;
+    match std::fs::File::open(LED_FB) {
+        Ok(mut f) => f.read_exact(buf).is_ok(),
+        Err(_) => false,
+    }
+}
+
 fn led_write(bytes: &[u8]) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(LED_FB) {
@@ -144,6 +154,7 @@ impl Player {
             led_on: Arc::new(AtomicBool::new(false)),
             led_phase: Arc::new(AtomicU64::new(0)),
             alice_state: Arc::new(std::sync::Mutex::new(String::new())),
+            station_playing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -351,6 +362,7 @@ impl Player {
         let sdur = self.station_duration.clone();
         let sprog = self.station_progress.clone();
         let astate = self.alice_state.clone();
+        let splay = self.station_playing.clone();
         tokio::spawn(async move {
             let mut last_served = 0u64;
             let mut silent_ticks = 0u32;
@@ -371,6 +383,7 @@ impl Player {
                 if let Ok(mut a) = astate.lock() {
                     *a = st.alice_state.clone();
                 }
+                splay.store(st.playing, Ordering::Relaxed);
                 // учитываем название только когда она не говорит и реально играет:
                 // иначе её реплика/TTS выглядит как «подмена трека»
                 if st.playing && (st.alice_state.is_empty() || st.alice_state == "0") {
@@ -406,29 +419,53 @@ impl Player {
         let on = self.led_on.clone();
         let ph = self.led_phase.clone();
         let ast = self.alice_state.clone();
+        let splay = self.station_playing.clone(); // своя копия: предыдущая ушла сторожу
         tokio::spawn(async move {
-            let mut last: Option<u8> = None;
+            let mut last: Option<Vec<u8>> = None;
+            // Пока штатная анимация рисует сама, мы молчим: иначе два художника
+            // на одном буфере дают дребезг (видно при включении её подсветки).
+            let mut standdown: u32 = 0;
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                if standdown > 0 {
+                    standdown -= 1;
+                    continue;
+                }
+                if let Some(prev) = last.as_ref() {
+                    let mut cur = vec![0u8; LED_PX * 4];
+                    // Нули в буфере не считаем «чужим рисунком»: сразу после нашей
+                    // записи они означают лишь, что кадр ещё не применился.
+                    if led_read(&mut cur) && &cur != prev && cur.iter().any(|b| *b != 0) {
+                        // в буфер пишет кто-то ещё (maind) — уступаем на ~12 секунд
+                        last = None;
+                        standdown = 150;
+                        continue;
+                    }
+                }
                 let t = ph.fetch_add(1, Ordering::Relaxed) as f32 * 0.08; // секунды
                 let a = ast.lock().map(|g| g.clone()).unwrap_or_default();
+                let any_sound = on.load(Ordering::Relaxed) || splay.load(Ordering::Relaxed);
                 // Её состояния показываем всегда — иначе при выключенной штатной
-                // подсветке она «немая». Музыка без неё — медленное дыхание.
+                // подсветке она «немая». Любой звук (наш или её) — медленное дыхание.
                 let level: i32 = match a.as_str() {
                     "1" => 190,                                     // слушает — ровно ярко
                     "2" => 150 + (45.0 * (t * 7.0).sin()) as i32,   // говорит — быстрый пульс
                     "3" => 100,                                     // занята — ровно средне
-                    _ if on.load(Ordering::Relaxed) => {
+                    _ if any_sound => {
                         // медленное дыхание: период ~12 с, яркость 20…110
                         (20.0 + 90.0 * ((t * 0.52).sin() * 0.5 + 0.5)) as i32
                     }
                     _ => 0,
                 };
                 let level = level.clamp(0, 255) as u8;
-                if level > 0 || last.map(|l| l > 0).unwrap_or(true) {
-                    led_write(&led_frame(level));
+                if level > 0 {
+                    let frame = led_frame(level);
+                    led_write(&frame);
+                    last = Some(frame);
+                } else if last.is_some() {
+                    led_write(&led_frame(0));
+                    last = None;
                 }
-                last = Some(level);
             }
         });
 
