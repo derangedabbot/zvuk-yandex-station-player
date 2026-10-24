@@ -880,7 +880,10 @@ async fn run_daemon() -> Result<()> {
                     }
                     c.resuming = false;
                 }
-                0 | 1 => {
+                0 => {
+                    // Возвращаем музыку ТОЛЬКО когда она закончила. На состоянии 1
+                    // (проснулась и слушает) наши stop/audio_play сбивают её диалог:
+                    // она активируется и тут же гаснет.
                     if ducked {
                         c.resuming = true;
                         match c.player.unduck().await {
@@ -895,6 +898,10 @@ async fn run_daemon() -> Result<()> {
                     ducked = false;
                     c.resuming = false;
                     eprintln!("zvukd: играет: {}", c.player.is_alive());
+                }
+                1 => {
+                    // она слушает — не трогаем звук и не шлём команд
+                    eprintln!("zvukd: она слушает — молчим");
                 }
                 _ => {}
             }

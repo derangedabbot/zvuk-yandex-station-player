@@ -455,13 +455,27 @@ impl Player {
     /// запомнив, докуда доиграли.
     pub async fn duck(&mut self) -> bool {
         if self.station.is_some() {
-            // штатный плеер сам уступает Алисе: просто ставим на паузу и не рвём файл
+            // штатный плеер сам уступает Алисе: ставим его на паузу и не рвём файл.
+            // ВАЖНО: отдельная команда `pause` им игнорируется — пауза едет вместе с потоком
+            // (`set_pause: true`), иначе музыка продолжает играть поверх её речи.
             if !self.is_alive() {
                 return false;
             }
-            if let Some(st) = &self.station {
-                st.gl.try_pause();
+            let cur = self.progress_ms.load(Ordering::Relaxed);
+            let file = self.file.clone();
+            let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
+            let artist = self.current.as_ref().map(|t| t.artists.clone()).unwrap_or_default();
+            if let (Some(st), Some(file)) = (self.station.as_ref(), file) {
+                let name = std::path::Path::new(&file)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    let url = st.src.url(&st.host, &name, crate::glagol::now_ms());
+                    st.gl.try_pause_stream(&url, &title, &artist, cur);
+                }
             }
+            self.frozen_ms.store(cur.max(1), Ordering::Relaxed);
             self.paused = true;
             return true;
         }
