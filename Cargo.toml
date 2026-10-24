@@ -10,6 +10,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# Glagol (локальное управление штатным плеером): WebSocket к станции по TLS с самоподписанным сертом
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+base64 = "0.22"
 
 # на колонке мало места и RAM — жмём бинарник
 [profile.release]

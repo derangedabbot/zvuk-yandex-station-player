@@ -9,8 +9,12 @@
 //! что звук занят (см. `docs/integration.md`).
 
 use crate::api::Track;
+use crate::glagol::Glagol;
+use crate::source::SourceServer;
 use anyhow::{anyhow, Context, Result};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::process::{Child, Command};
 
 const ERR_FILE: &str = "/tmp/zvukd-player.err";
@@ -28,6 +32,21 @@ pub struct Player {
     skip_frames: u64,
     /// Когда началось воспроизведение — от этого считается позиция.
     started_at: Option<std::time::Instant>,
+    /// Режим «играет штатный плеер станции»: свой раздатчик файлов + Glagol.
+    station: Option<Station>,
+    /// Живость и позиция из состояния станции (обновляет фоновый сторож).
+    live: Arc<AtomicBool>,
+    progress_ms: Arc<AtomicU64>,
+    /// Когда начался текущий трек (мс эпохи) — запасной источник позиции,
+    /// если станция прогресс не отдаёт.
+    start_epoch: Arc<AtomicU64>,
+}
+
+/// Штатный плеер станции: свой HTTP-раздатчик и канал управления.
+struct Station {
+    gl: Glagol,
+    src: SourceServer,
+    host: String,
 }
 
 /// Сколько кадров MP3 в секунде при 44,1 кГц (кадр = 1152 сэмпла).
@@ -45,16 +64,32 @@ impl Player {
             file: None,
             skip_frames: 0,
             started_at: None,
+            station: None,
+            live: Arc::new(AtomicBool::new(false)),
+            progress_ms: Arc::new(AtomicU64::new(0)),
+            start_epoch: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Режим звука: `station` (по умолчанию) — играет штатный плеер станции,
+    /// `alsa` — старый путь через mpg123+aplay (оставлен для отката).
+    fn station_mode() -> bool {
+        !env_or("ZVUK_MODE", "station").eq_ignore_ascii_case("alsa")
     }
 
     /// Играет ли ещё: живы оба — декодер и вывод.
     pub fn is_alive(&mut self) -> bool {
+        if self.station.is_some() {
+            return self.live.load(Ordering::Relaxed) && self.current.is_some();
+        }
         alive(&mut self.decoder) && alive(&mut self.output)
     }
 
     /// pid процесса, который держит звук (`aplay`) — его показывает `status`.
     pub fn pid(&mut self) -> Option<u32> {
+        if self.station.is_some() {
+            return None; // играет штатный плеер станции, своих процессов нет
+        }
         self.output.as_ref().and_then(|c| c.id())
     }
 
@@ -88,6 +123,9 @@ impl Player {
 
     /// Играть файл с указанного кадра — так продолжается трек после её реплики.
     pub async fn play_from(&mut self, track: Track, file: &str, skip_frames: u64) -> Result<()> {
+        if Player::station_mode() {
+            return self.play_station(track, file).await;
+        }
         self.file = Some(file.to_string());
         self.skip_frames = skip_frames;
         self.started_at = Some(std::time::Instant::now());
@@ -104,6 +142,118 @@ impl Player {
             }
         }
         Err(last.unwrap_or_else(|| anyhow!("не удалось запустить воспроизведение")))
+    }
+
+    /// Играть штатным плеером станции: свой HTTP-раздатчик + `audio_play` через Glagol.
+    async fn play_station(&mut self, track: Track, file: &str) -> Result<()> {
+        self.ensure_station(file).await?;
+        let (url, gl) = {
+            let st = self.station.as_ref().expect("станция подключена");
+            let name = std::path::Path::new(file)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let url = st.src.url(&st.host, &name, crate::glagol::now_ms());
+            (url, st.gl.clone())
+        };
+        // спецификация: stop → пауза ~150 мс → audio_play с новым URL
+        gl.stop().await.ok();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        gl.audio_play(&url, &track.title, &track.artists, 0).await?;
+
+        self.file = Some(file.to_string());
+        self.current = Some(track);
+        self.paused = false;
+        self.started_at = Some(std::time::Instant::now());
+        self.live.store(true, Ordering::Relaxed);
+        self.progress_ms.store(0, Ordering::Relaxed);
+        self.start_epoch.store(crate::glagol::now_ms(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Поднять Glagol и раздатчик (один раз за жизнь процесса).
+    async fn ensure_station(&mut self, file: &str) -> Result<()> {
+        if self.station.is_some() {
+            return Ok(());
+        }
+        let host = env_or("ZVUK_HOST", "127.0.0.1");
+        let device = env_or("ZVUK_DEVICE_ID", "DEVICE_ID");
+        let platform = env_or("ZVUK_PLATFORM", "yandexmidi");
+        let port: u16 = env_or("ZVUK_SRC_PORT", "8765").parse().unwrap_or(8765);
+        let dir = std::path::Path::new(file)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp/zvukd"));
+
+        let gl = Glagol::connect(host.clone(), device, platform).await?;
+        let src = SourceServer::start(dir, port).await?;
+
+        // Сторож живости. Опираться на состояние станции нельзя: в ответах оно отстаёт
+        // на одну команду и «playing» приходит ложным. Поэтому главный признак —
+        // станция реально тянет байты из нашего раздатчика.
+        let watcher = gl.clone();
+        let srcw = src.clone();
+        let live = self.live.clone();
+        let prog = self.progress_ms.clone();
+        let start_epoch = self.start_epoch.clone();
+        tokio::spawn(async move {
+            let mut last_served = 0u64;
+            let mut silent_ticks = 0u32;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                let served = srcw.served();
+                if served > last_served {
+                    last_served = served;
+                    silent_ticks = 0;
+                    live.store(true, Ordering::Relaxed);
+                } else if live.load(Ordering::Relaxed) {
+                    silent_ticks += 1;
+                    if silent_ticks >= 8 {
+                        live.store(false, Ordering::Relaxed);
+                    }
+                }
+                let st = watcher.state().await;
+                if st.playing || st.paused {
+                    live.store(true, Ordering::Relaxed);
+                }
+                let started = start_epoch.load(Ordering::Relaxed);
+                let elapsed = if started > 0 {
+                    (crate::glagol::now_ms().saturating_sub(started)) as f64 / 1000.0
+                } else {
+                    0.0
+                };
+                let pos = if st.progress > 0.5 { st.progress } else { elapsed };
+                prog.store((pos.max(0.0) * 1000.0) as u64, Ordering::Relaxed);
+            }
+        });
+
+        self.station = Some(Station { gl, src, host });
+        Ok(())
+    }
+
+    /// Переиграть текущий файл с позиции (продолжение после паузы/реплики Алисы).
+    async fn replay_from_position(&mut self) -> Result<()> {
+        let (Some(track), Some(file)) = (self.current.clone(), self.file.clone()) else {
+            return Ok(());
+        };
+        let offset_ms = self.progress_ms.load(Ordering::Relaxed);
+        self.start_epoch.store(
+            crate::glagol::now_ms().saturating_sub(offset_ms),
+            Ordering::Relaxed,
+        );
+        let (url, gl) = {
+            let st = self.station.as_ref().ok_or_else(|| anyhow!("станция не подключена"))?;
+            let name = std::path::Path::new(&file)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            (st.src.url(&st.host, &name, crate::glagol::now_ms()), st.gl.clone())
+        };
+        gl.stop().await.ok();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        gl.audio_play(&url, &track.title, &track.artists, offset_ms).await?;
+        self.live.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn try_play(&mut self, track: Track, file: &str) -> Result<()> {
@@ -192,6 +342,13 @@ impl Player {
     }
 
     pub async fn stop(&mut self) -> Result<()> {
+        if let Some(st) = &self.station {
+            st.gl.stop().await.ok();
+            self.live.store(false, Ordering::Relaxed);
+            self.current = None;
+            self.paused = false;
+            return Ok(());
+        }
         // сначала вывод: иначе декодер висит на записи в мёртвую трубу
         kill_wait(&mut self.output).await;
         kill_wait(&mut self.decoder).await;
@@ -202,6 +359,9 @@ impl Player {
 
     /// Позиция в секундах: пропуск при возврате плюс время с начала воспроизведения.
     pub fn position(&self) -> u64 {
+        if self.station.is_some() {
+            return self.progress_ms.load(Ordering::Relaxed) / 1000;
+        }
         let base = (self.skip_frames as f64) / FRAMES_PER_SEC;
         let played = self.started_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         (base + played) as u64
@@ -220,6 +380,17 @@ impl Player {
     /// Уступить звук Алисе: закрыть устройство (иначе она не сможет говорить),
     /// запомнив, докуда доиграли.
     pub async fn duck(&mut self) -> bool {
+        if self.station.is_some() {
+            // штатный плеер сам уступает Алисе: просто ставим на паузу и не рвём файл
+            if !self.is_alive() {
+                return false;
+            }
+            if let Some(st) = &self.station {
+                st.gl.try_pause();
+            }
+            self.paused = true;
+            return true;
+        }
         if !self.is_alive() {
             return false;
         }
@@ -233,6 +404,13 @@ impl Player {
 
     /// Вернуть звук: продолжить тот же трек с того же места.
     pub async fn unduck(&mut self) -> Result<()> {
+        if self.station.is_some() {
+            // ВАЖНО: `play` у станции возобновляет ЕЁ прошлую сущность (например, «32 радио»),
+            // а не наш файл. Поэтому продолжаем повторным audio_play с текущей позиции.
+            self.replay_from_position().await?;
+            self.paused = false;
+            return Ok(());
+        }
         let (Some(track), Some(file)) = (self.current.clone(), self.file.clone()) else {
             return Ok(());
         };
@@ -242,6 +420,11 @@ impl Player {
 
     /// Пауза через SIGSTOP: оба процесса замирают, позиция не теряется.
     pub fn pause(&mut self) -> Result<()> {
+        if let Some(st) = &self.station {
+            st.gl.try_pause();
+            self.paused = true;
+            return Ok(());
+        }
         let pid = self.pid().ok_or_else(|| anyhow!("не играет"))?;
         signal(pid, "STOP")?;
         if let Some(d) = self.decoder.as_ref().and_then(|c| c.id()) {
@@ -252,6 +435,34 @@ impl Player {
     }
 
     pub fn resume(&mut self) -> Result<()> {
+        if let Some(st) = &self.station {
+            // см. unduck: `play` вернёт радио станции, поэтому переигрываем свой файл с позиции
+            let gl = st.gl.clone();
+            let src = st.src.clone();
+            let host = st.host.clone();
+            let file = self.file.clone().unwrap_or_default();
+            let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
+            let artist = self.current.as_ref().map(|t| t.artists.clone()).unwrap_or_default();
+            let offset_ms = self.progress_ms.load(Ordering::Relaxed);
+            self.start_epoch.store(
+                crate::glagol::now_ms().saturating_sub(offset_ms),
+                Ordering::Relaxed,
+            );
+            tokio::spawn(async move {
+                let name = std::path::Path::new(&file)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                gl.stop().await.ok();
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let url = src.url(&host, &name, crate::glagol::now_ms());
+                if let Err(e) = gl.audio_play(&url, &title, &artist, offset_ms).await {
+                    eprintln!("zvukd: продолжить не вышло: {e}");
+                }
+            });
+            self.paused = false;
+            return Ok(());
+        }
         let pid = self.pid().ok_or_else(|| anyhow!("не играет"))?;
         signal(pid, "CONT")?;
         if let Some(d) = self.decoder.as_ref().and_then(|c| c.id()) {
