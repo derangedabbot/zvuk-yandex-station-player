@@ -425,18 +425,27 @@ impl Player {
             // Пока штатная анимация рисует сама, мы молчим: иначе два художника
             // на одном буфере дают дребезг (видно при включении её подсветки).
             let mut standdown: u32 = 0;
+            let mut probe: u32 = 0;
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
                 if standdown > 0 {
                     standdown -= 1;
                     continue;
                 }
-                if let Some(prev) = last.as_ref() {
-                    let mut cur = vec![0u8; LED_PX * 4];
-                    // Нули в буфере не считаем «чужим рисунком»: сразу после нашей
-                    // записи они означают лишь, что кадр ещё не применился.
-                    if led_read(&mut cur) && &cur != prev && cur.iter().any(|b| *b != 0) {
-                        // в буфер пишет кто-то ещё (maind) — уступаем на ~12 секунд
+                // Раз в ~5 секунд честно проверяем, не рисует ли кто-то ещё: делаем два
+                // чтения подряд, НЕ записывая между ними. Если буфер изменился сам —
+                // значит работает штатная анимация, и мы уступаем (иначе дребезг).
+                // Сравнивать «что записали» с «что прочитали» нельзя: после гаммы
+                // значения не совпадают.
+                probe += 1;
+                if probe >= 60 {
+                    probe = 0;
+                    let mut a = vec![0u8; LED_PX * 4];
+                    let mut b = vec![0u8; LED_PX * 4];
+                    let ok1 = led_read(&mut a);
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    let ok2 = led_read(&mut b);
+                    if ok1 && ok2 && a != b {
                         last = None;
                         standdown = 150;
                         continue;
