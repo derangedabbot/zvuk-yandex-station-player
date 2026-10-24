@@ -61,6 +61,31 @@ struct Station {
     host: String,
 }
 
+/// Идентификатор этой колонки из её же конфигурации (`/data/quasar/devices.json`):
+/// выбираем запись с нашим platform, иначе первую. Пусто — если файла нет.
+fn device_id_for_platform(platform: &str) -> String {
+    let Ok(text) = std::fs::read_to_string("/data/quasar/devices.json") else {
+        return String::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return String::new();
+    };
+    let list = v.get("devices").and_then(|d| d.as_array());
+    let pick = |d: &serde_json::Value| d.get("id").and_then(|i| i.as_str()).map(str::to_string);
+    if let Some(list) = list {
+        for d in list {
+            let same = d.get("platform").and_then(|p| p.as_str()).map(|p| p == platform).unwrap_or(false);
+            if same {
+                if let Some(id) = pick(d) { return id; }
+            }
+        }
+        if let Some(id) = list.first().and_then(pick) {
+            return id;
+        }
+    }
+    v.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_string()
+}
+
 /// Сколько кадров MP3 в секунде при 44,1 кГц (кадр = 1152 сэмпла).
 const FRAMES_PER_SEC: f64 = 44100.0 / 1152.0;
 
@@ -255,8 +280,10 @@ impl Player {
             return Ok(());
         }
         let host = env_or("ZVUK_HOST", "127.0.0.1");
-        let device = env_or("ZVUK_DEVICE_ID", "DEVICE_ID");
+        // device_id не зашиваем в код: он у каждой колонки свой и это её идентификатор.
+        // Берём из конфигурации самой колонки (или из переменной окружения).
         let platform = env_or("ZVUK_PLATFORM", "yandexmidi");
+        let device = env_or("ZVUK_DEVICE_ID", &device_id_for_platform(&platform));
         let port: u16 = env_or("ZVUK_SRC_PORT", "8765").parse().unwrap_or(8765);
         let dir = std::path::Path::new(file)
             .parent()
