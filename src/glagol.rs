@@ -381,7 +381,7 @@ fn next_id() -> String {
 fn audio_play_data(url: &str, title: &str, subtitle: &str, offset_ms: u64, set_pause: bool) -> String {
     let mut stream = json!({
         "url": url,
-        "format": "MP3",          // прошивка требует именно MP3, кодек определяет сама (FLAC тоже играет)
+        "format": "MP3",          // только MP3: FLAC колонка не декодирует, flacdrm не играется вовсе
         "type": "Track",
         "offset_ms": offset_ms,
     });

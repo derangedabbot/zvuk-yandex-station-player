@@ -452,8 +452,8 @@ impl Api {
         Ok(out)
     }
 
-    /// Ссылка на поток: high (mp3) → mid (mp3) → flac.
-    /// `flacdrm` не играется и намеренно пропускается.
+    /// Ссылка на поток: `high` (mp3) → `mid` (mp3). Всё.
+    /// FLAC не берём вообще: на колонке нет декодера, а `flacdrm` защищён и не играется.
     pub async fn stream_url(&self, track_id: &str) -> Result<String> {
         let v = self
             .gql(Q_STREAM, "getStream", json!({ "ids": [track_id] }))
@@ -465,7 +465,7 @@ impl Api {
 
         for item in items {
             let Some(stream) = item.get("stream") else { continue };
-            for key in ["high", "mid", "flac"] {
+            for key in ["high", "mid"] {
                 if let Some(url) = stream.get(key).and_then(Value::as_str) {
                     if url.starts_with("http") {
                         return Ok(url.to_owned());
