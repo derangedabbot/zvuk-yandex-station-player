@@ -49,6 +49,9 @@ pub struct Player {
     /// Длительность трека, которую показывает станция: по ней видно подмену надёжнее,
     /// чем по названию (у её потока название часто пустое, а длительность другая).
     station_duration: Arc<std::sync::Mutex<f64>>,
+    /// Позиция, которую показывает станция: главный признак подмены. Если она отстаёт
+    /// от нашей больше чем на несколько секунд — играет уже не наш файл.
+    station_progress: Arc<std::sync::Mutex<f64>>,
 }
 
 /// Штатный плеер станции: свой HTTP-раздатчик и канал управления.
@@ -80,6 +83,7 @@ impl Player {
             frozen_ms: Arc::new(AtomicU64::new(0)),
             station_title: Arc::new(std::sync::Mutex::new(String::new())),
             station_duration: Arc::new(std::sync::Mutex::new(0.0)),
+            station_progress: Arc::new(std::sync::Mutex::new(0.0)),
         }
     }
 
@@ -111,6 +115,12 @@ impl Player {
         let ours_s = (self.duration_ms() as f64) / 1000.0;
         let theirs_s = self.station_duration.lock().map(|d| *d).unwrap_or(0.0);
         if ours_s > 1.0 && theirs_s > 1.0 && (theirs_s - ours_s).abs() > 2.0 {
+            return true;
+        }
+        // её волна/поток начинается почти с нуля, а мы уже играем: позиция резко «назад»
+        let ours_p = self.progress_ms.load(Ordering::Relaxed) as f64 / 1000.0;
+        let theirs_p = self.station_progress.lock().map(|p| *p).unwrap_or(0.0);
+        if ours_p > 5.0 && theirs_p + 4.0 < ours_p {
             return true;
         }
         let theirs = self
@@ -269,6 +279,7 @@ impl Player {
         let frozen = self.frozen_ms.clone();
         let stitle = self.station_title.clone();
         let sdur = self.station_duration.clone();
+        let sprog = self.station_progress.clone();
         tokio::spawn(async move {
             let mut last_served = 0u64;
             let mut silent_ticks = 0u32;
@@ -294,6 +305,9 @@ impl Player {
                     }
                     if let Ok(mut d) = sdur.lock() {
                         *d = st.duration;
+                    }
+                    if let Ok(mut p) = sprog.lock() {
+                        *p = st.progress;
                     }
                 }
                 if st.playing || st.paused {

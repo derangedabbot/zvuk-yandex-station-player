@@ -941,7 +941,7 @@ async fn run_daemon() -> Result<()> {
                 let now = std::time::Instant::now();
                 let ready = c
                     .last_reassert
-                    .map(|t| now.duration_since(t).as_secs() >= 2)
+                    .map(|t| now.duration_since(t).as_secs() >= 1)
                     .unwrap_or(true);
                 if ready {
                     c.last_reassert = Some(now);
