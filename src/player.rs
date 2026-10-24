@@ -40,6 +40,12 @@ pub struct Player {
     /// Когда начался текущий трек (мс эпохи) — запасной источник позиции,
     /// если станция прогресс не отдаёт.
     start_epoch: Arc<AtomicU64>,
+    /// Позиция на момент паузы (0 — паузы нет). Пока стоит, счётчик не двигается:
+    /// иначе за время паузы позиция «убегает» и продолжение прыгает вперёд.
+    frozen_ms: Arc<AtomicU64>,
+    /// Что станция считает играющим (её поле title). Нужно, чтобы заметить подмену:
+    /// Алиса на «продолжи» включает свой поток, и он затирает наш файл.
+    station_title: Arc<std::sync::Mutex<String>>,
 }
 
 /// Штатный плеер станции: свой HTTP-раздатчик и канал управления.
@@ -68,6 +74,8 @@ impl Player {
             live: Arc::new(AtomicBool::new(false)),
             progress_ms: Arc::new(AtomicU64::new(0)),
             start_epoch: Arc::new(AtomicU64::new(0)),
+            frozen_ms: Arc::new(AtomicU64::new(0)),
+            station_title: Arc::new(std::sync::Mutex::new(String::new())),
         }
     }
 
@@ -80,9 +88,61 @@ impl Player {
     /// Играет ли ещё: живы оба — декодер и вывод.
     pub fn is_alive(&mut self) -> bool {
         if self.station.is_some() {
-            return self.live.load(Ordering::Relaxed) && self.current.is_some();
+            // Станция скачивает файл за считанные секунды, поэтому «растут ли
+            // отданные байты» про живость не говорит — смотрим её же позицию.
+            let dur = self.duration_ms();
+            let prog = self.progress_ms.load(Ordering::Relaxed);
+            return self.current.is_some() && (dur == 0 || prog + 3000 < dur);
         }
         alive(&mut self.decoder) && alive(&mut self.output)
+    }
+
+    /// Станция играет не наш файл, а что-то своё (её поток после «продолжи»).
+    /// Признак: она называет трек, и это не название нашего.
+    pub fn station_took_over(&self) -> bool {
+        if self.station.is_none() || self.paused || self.current.is_none() {
+            return false;
+        }
+        let theirs = self
+            .station_title
+            .lock()
+            .map(|g| g.trim().to_lowercase())
+            .unwrap_or_default();
+        let ours = self
+            .current
+            .as_ref()
+            .map(|t| t.title.trim().to_lowercase())
+            .unwrap_or_default();
+        if theirs.is_empty() || ours.is_empty() {
+            return false;
+        }
+        !theirs.contains(&ours)
+    }
+
+    /// Вернуть наш файл на место после её подмены.
+    pub async fn reassert(&mut self) -> Result<()> {
+        if let Ok(mut g) = self.station_title.lock() {
+            g.clear();
+        }
+        self.replay_from_position().await
+    }
+
+    /// Длительность текущего трека в миллисекундах (0 — неизвестна).
+    fn duration_ms(&self) -> u64 {
+        self.current
+            .as_ref()
+            .map(|t| (t.duration.max(0) as u64) * 1000)
+            .unwrap_or(0)
+    }
+
+    /// Трек доиграл до конца — можно переходить к следующему.
+    pub fn is_finished(&mut self) -> bool {
+        if self.station.is_some() {
+            let dur = self.duration_ms();
+            let prog = self.progress_ms.load(Ordering::Relaxed);
+            return dur > 0 && prog + 1500 >= dur && !self.paused;
+        }
+        self.current.is_some() && !self.is_alive()
     }
 
     /// pid процесса, который держит звук (`aplay`) — его показывает `status`.
@@ -196,6 +256,8 @@ impl Player {
         let live = self.live.clone();
         let prog = self.progress_ms.clone();
         let start_epoch = self.start_epoch.clone();
+        let frozen = self.frozen_ms.clone();
+        let stitle = self.station_title.clone();
         tokio::spawn(async move {
             let mut last_served = 0u64;
             let mut silent_ticks = 0u32;
@@ -213,6 +275,13 @@ impl Player {
                     }
                 }
                 let st = watcher.state().await;
+                // учитываем название только когда она не говорит и реально играет:
+                // иначе её реплика/TTS выглядит как «подмена трека»
+                if st.playing && (st.alice_state.is_empty() || st.alice_state == "0") {
+                    if let Ok(mut g) = stitle.lock() {
+                        *g = st.title.clone();
+                    }
+                }
                 if st.playing || st.paused {
                     live.store(true, Ordering::Relaxed);
                 }
@@ -222,6 +291,9 @@ impl Player {
                 } else {
                     0.0
                 };
+                if frozen.load(Ordering::Relaxed) > 0 {
+                    continue; // пауза: позиция заморожена на месте
+                }
                 let pos = if st.progress > 0.5 { st.progress } else { elapsed };
                 prog.store((pos.max(0.0) * 1000.0) as u64, Ordering::Relaxed);
             }
@@ -236,7 +308,9 @@ impl Player {
         let (Some(track), Some(file)) = (self.current.clone(), self.file.clone()) else {
             return Ok(());
         };
-        let offset_ms = self.progress_ms.load(Ordering::Relaxed);
+        let frozen = self.frozen_ms.swap(0, Ordering::Relaxed);
+        let offset_ms = if frozen > 0 { frozen } else { self.progress_ms.load(Ordering::Relaxed) };
+        self.progress_ms.store(offset_ms, Ordering::Relaxed);
         self.start_epoch.store(
             crate::glagol::now_ms().saturating_sub(offset_ms),
             Ordering::Relaxed,
@@ -422,6 +496,9 @@ impl Player {
     pub fn pause(&mut self) -> Result<()> {
         if let Some(st) = &self.station {
             st.gl.try_pause();
+            // фиксируем секунду паузы: счётчик после resume пойдёт ровно отсюда
+            let cur = self.progress_ms.load(Ordering::Relaxed);
+            self.frozen_ms.store(cur.max(1), Ordering::Relaxed);
             self.paused = true;
             return Ok(());
         }
@@ -443,7 +520,9 @@ impl Player {
             let file = self.file.clone().unwrap_or_default();
             let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
             let artist = self.current.as_ref().map(|t| t.artists.clone()).unwrap_or_default();
-            let offset_ms = self.progress_ms.load(Ordering::Relaxed);
+            let frozen = self.frozen_ms.swap(0, Ordering::Relaxed);
+            let offset_ms = if frozen > 0 { frozen } else { self.progress_ms.load(Ordering::Relaxed) };
+            self.progress_ms.store(offset_ms, Ordering::Relaxed);
             self.start_epoch.store(
                 crate::glagol::now_ms().saturating_sub(offset_ms),
                 Ordering::Relaxed,

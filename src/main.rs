@@ -67,6 +67,8 @@ struct Core {
     saved_position: u64,
     /// Если играем плейлист — здесь его состояние, чтобы догружать страницы.
     playlist: Option<PlaylistState>,
+    /// Когда последний раз возвращали наш файл после её подмены (не чаще раза в 4 с).
+    last_reassert: Option<std::time::Instant>,
 }
 
 impl Core {
@@ -834,6 +836,7 @@ async fn run_daemon() -> Result<()> {
         resuming: false,
         saved_position: 0,
         playlist: None,
+        last_reassert: None,
     };
     // восстановить сохранённую очередь (но не начинать играть без просьбы)
     if let Some((queue, idx, position, flow)) = load_state() {
@@ -905,11 +908,28 @@ async fn run_daemon() -> Result<()> {
             iv.tick().await;
             let mut c = tick_core.lock().await;
             // трек доиграл сам — переходим к следующему, если есть
+            // Алиса на «продолжи»/«дальше» включает свой поток и затирает наш файл.
+            // Слушатель ставит нашу команду, но её облако отвечает позже — поэтому
+            // замечаем подмену по её же названию трека и возвращаем свой файл.
+            if !c.resuming && c.player.station_took_over() {
+                let now = std::time::Instant::now();
+                let ready = c
+                    .last_reassert
+                    .map(|t| now.duration_since(t).as_secs() >= 4)
+                    .unwrap_or(true);
+                if ready {
+                    c.last_reassert = Some(now);
+                    eprintln!("zvukd: станция подменила трек — возвращаю наш файл");
+                    let _ = c.player.reassert().await;
+                    continue;
+                }
+            }
             if c.autoplay
                 && !c.resuming
                 && !c.flow_ducked
+                && !c.player.paused
                 && c.player.current.is_some()
-                && !c.player.is_alive()
+                && c.player.is_finished()
             {
                 let _ = c.advance().await;
             }
