@@ -575,6 +575,12 @@ impl Core {
                 res
             }
             "next" => self.advance().await,
+            // Вернуть наш файл на место после того, как её волна успела влезть:
+            // переигрываем ТОТ ЖЕ трек с текущей секунды (не следующий).
+            "reassert" => match self.player.reassert().await {
+                Ok(()) => Ok("Наш трек на месте".into()),
+                Err(e) => Ok(format!("Не вышло: {e}")),
+            },
             "prev" => match self.player.prev_track() {
                 Some(t) => self.play_track(t).await,
                 None => Ok("Это первый трек".into()),
@@ -922,7 +928,7 @@ async fn run_daemon() -> Result<()> {
                 let now = std::time::Instant::now();
                 let ready = c
                     .last_reassert
-                    .map(|t| now.duration_since(t).as_secs() >= 4)
+                    .map(|t| now.duration_since(t).as_secs() >= 2)
                     .unwrap_or(true);
                 if ready {
                     c.last_reassert = Some(now);
