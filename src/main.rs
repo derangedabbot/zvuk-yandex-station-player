@@ -577,10 +577,17 @@ impl Core {
             "next" => self.advance().await,
             // Вернуть наш файл на место после того, как её волна успела влезть:
             // переигрываем ТОТ ЖЕ трек с текущей секунды (не следующий).
-            "reassert" => match self.player.reassert().await {
-                Ok(()) => Ok("Наш трек на месте".into()),
-                Err(e) => Ok(format!("Не вышло: {e}")),
-            },
+            "reassert" => {
+                // ничего не делаем, если трек и так наш: лишняя переигровка даёт слышимую заминку
+                if !self.player.station_took_over() {
+                    Ok("уже наш трек".into())
+                } else {
+                    match self.player.reassert().await {
+                        Ok(()) => Ok("Наш трек на месте".into()),
+                        Err(e) => Ok(format!("Не вышло: {e}")),
+                    }
+                }
+            }
             "prev" => match self.player.prev_track() {
                 Some(t) => self.play_track(t).await,
                 None => Ok("Это первый трек".into()),
