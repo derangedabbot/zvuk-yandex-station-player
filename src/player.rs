@@ -117,12 +117,10 @@ impl Player {
         if ours_s > 1.0 && theirs_s > 1.0 && (theirs_s - ours_s).abs() > 2.0 {
             return true;
         }
-        // её волна/поток начинается почти с нуля, а мы уже играем: позиция резко «назад»
-        let ours_p = self.progress_ms.load(Ordering::Relaxed) as f64 / 1000.0;
-        let theirs_p = self.station_progress.lock().map(|p| *p).unwrap_or(0.0);
-        if ours_p > 5.0 && theirs_p + 4.0 < ours_p {
-            return true;
-        }
+        // Позицию для определения подмены НЕ используем: она даёт ложные срабатывания
+        // (после нашей же переигровки станция снова начинает с нуля), и трек уходит
+        // в бесконечные перезапуски — звук «как будто испорченный».
+
         let theirs = self
             .station_title
             .lock()
