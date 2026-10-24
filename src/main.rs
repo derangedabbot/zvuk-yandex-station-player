@@ -69,6 +69,8 @@ struct Core {
     playlist: Option<PlaylistState>,
     /// Когда последний раз возвращали наш файл после её подмены (не чаще раза в 4 с).
     last_reassert: Option<std::time::Instant>,
+    /// Мы поставили паузу из-за AirPlay (а не человек) — тогда и снимаем сами.
+    airplay_paused: bool,
     /// Когда последний раз переключали трек: защита от двойного перехода
     /// (автопереход по концу + голосовая команда «дальше» давали два «следующий» подряд).
     last_switch: Option<std::time::Instant>,
@@ -862,6 +864,7 @@ async fn run_daemon() -> Result<()> {
         saved_position: 0,
         playlist: None,
         last_reassert: None,
+        airplay_paused: false,
         last_switch: None,
     };
     // восстановить сохранённую очередь (но не начинать играть без просьбы)
@@ -945,6 +948,22 @@ async fn run_daemon() -> Result<()> {
             // «угадать» подмену давала либо её волну, либо бесконечные перезапуски.
             // Порядок команд решается в слушателе: он выжидает 3 с, пока её облако
             // ответит и запустит своё, и только потом ставит наш трек — последний выигрывает.
+            // AirPlay и наш плеер делят одно устройство: пока сессия жива,
+            // мы уступаем (пауза), а после её конца продолжаем сами.
+            let ap = crate::player::airplay_active();
+            if ap && !c.airplay_paused && !c.player.paused && c.player.current.is_some() {
+                if c.player.pause().is_ok() {
+                    c.airplay_paused = true;
+                    c.last_switch = None;
+                    eprintln!("zvukd: AirPlay занял звук — пауза");
+                }
+            } else if !ap && c.airplay_paused {
+                if c.player.resume().is_ok() {
+                    c.airplay_paused = false;
+                    eprintln!("zvukd: AirPlay освободил звук — продолжаю");
+                }
+            }
+
             let switch_ready = c
                 .last_switch
                 .map(|t| t.elapsed().as_secs() >= 3)

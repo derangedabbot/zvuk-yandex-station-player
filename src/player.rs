@@ -128,6 +128,25 @@ fn led_level(alice: &str, any_sound: bool, t: f32) -> i32 {
     }
 }
 
+/// Занят ли звук AirPlay: ищем установленное соединение на порту 7000 (0x1B58).
+/// Порт слушает shairport-sync; пока сессия жива, устройство принадлежит ей.
+pub fn airplay_active() -> bool {
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(table) else { continue };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 4 {
+                continue;
+            }
+            let port = f[1].rsplit(':').next().unwrap_or("");
+            if port.eq_ignore_ascii_case("1B58") && f[3] == "01" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn led_read(buf: &mut [u8]) -> bool {
     use std::io::Read;
     match std::fs::File::open(LED_FB) {
