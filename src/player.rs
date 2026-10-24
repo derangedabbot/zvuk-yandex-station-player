@@ -54,8 +54,11 @@ pub struct Player {
     station_progress: Arc<std::sync::Mutex<f64>>,
     /// Держим ли кольцо сами (зелёная волна) — включается на воспроизведении.
     led_on: Arc<AtomicBool>,
-    /// Фаза волны, чтобы кадры шли по кругу.
+    /// Фаза для дыхания/пульсации.
     led_phase: Arc<AtomicU64>,
+    /// Состояние Алисы из её же канала: 0 молчит, 1 слушает, 2 говорит, 3 занята.
+    /// Нужно, чтобы показывать её состояния самим — штатная подсветка выключена.
+    alice_state: Arc<std::sync::Mutex<String>>,
 }
 
 /// Штатный плеер станции: свой HTTP-раздатчик и канал управления.
@@ -96,14 +99,12 @@ fn device_id_for_platform(platform: &str) -> String {
 const LED_FB: &str = "/dev/fb0";
 const LED_PX: usize = 89;
 
-/// Один кадр зелёной волны. `phase` двигает её по кругу.
-fn led_frame(phase: f32) -> Vec<u8> {
+/// Кадр: ровная зелёная заливка заданной яркости (0..255). Только зелёный канал.
+fn led_frame(level: u8) -> Vec<u8> {
     let mut buf = vec![0u8; LED_PX * 4];
     for i in 0..LED_PX {
-        let x = (i as f32 / LED_PX as f32) * std::f32::consts::TAU;
-        let v = ((x * 1.5 + phase).sin() * 0.5 + 0.5) * 150.0 + 45.0;
         buf[i * 4] = 0;
-        buf[i * 4 + 1] = v as u8; // только зелёный канал
+        buf[i * 4 + 1] = level;
         buf[i * 4 + 2] = 0;
         buf[i * 4 + 3] = 0;
     }
@@ -142,6 +143,7 @@ impl Player {
             station_progress: Arc::new(std::sync::Mutex::new(0.0)),
             led_on: Arc::new(AtomicBool::new(false)),
             led_phase: Arc::new(AtomicU64::new(0)),
+            alice_state: Arc::new(std::sync::Mutex::new(String::new())),
         }
     }
 
@@ -348,6 +350,7 @@ impl Player {
         let stitle = self.station_title.clone();
         let sdur = self.station_duration.clone();
         let sprog = self.station_progress.clone();
+        let astate = self.alice_state.clone();
         tokio::spawn(async move {
             let mut last_served = 0u64;
             let mut silent_ticks = 0u32;
@@ -365,6 +368,9 @@ impl Player {
                     }
                 }
                 let st = watcher.state().await;
+                if let Ok(mut a) = astate.lock() {
+                    *a = st.alice_state.clone();
+                }
                 // учитываем название только когда она не говорит и реально играет:
                 // иначе её реплика/TTS выглядит как «подмена трека»
                 if st.playing && (st.alice_state.is_empty() || st.alice_state == "0") {
@@ -399,13 +405,30 @@ impl Player {
         // не пишет, и наши кадры держатся. Волна — только зелёная.
         let on = self.led_on.clone();
         let ph = self.led_phase.clone();
+        let ast = self.alice_state.clone();
         tokio::spawn(async move {
+            let mut last: Option<u8> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                if on.load(Ordering::Relaxed) {
-                    let phase = (ph.fetch_add(1, Ordering::Relaxed) as f32) * 0.12;
-                    led_write(&led_frame(phase));
+                let t = ph.fetch_add(1, Ordering::Relaxed) as f32 * 0.08; // секунды
+                let a = ast.lock().map(|g| g.clone()).unwrap_or_default();
+                // Её состояния показываем всегда — иначе при выключенной штатной
+                // подсветке она «немая». Музыка без неё — медленное дыхание.
+                let level: i32 = match a.as_str() {
+                    "1" => 190,                                     // слушает — ровно ярко
+                    "2" => 150 + (45.0 * (t * 7.0).sin()) as i32,   // говорит — быстрый пульс
+                    "3" => 100,                                     // занята — ровно средне
+                    _ if on.load(Ordering::Relaxed) => {
+                        // медленное дыхание: период ~12 с, яркость 20…110
+                        (20.0 + 90.0 * ((t * 0.52).sin() * 0.5 + 0.5)) as i32
+                    }
+                    _ => 0,
+                };
+                let level = level.clamp(0, 255) as u8;
+                if level > 0 || last.map(|l| l > 0).unwrap_or(true) {
+                    led_write(&led_frame(level));
                 }
+                last = Some(level);
             }
         });
 
