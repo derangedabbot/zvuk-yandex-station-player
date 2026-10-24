@@ -42,7 +42,7 @@ enum Cmd {
     Stop,
     Pause,
     Resume,
-    AudioPlay { url: String, title: String, subtitle: String, offset_ms: u64 },
+    AudioPlay { url: String, title: String, subtitle: String, offset_ms: u64, set_pause: bool },
     Volume(f32),
 }
 
@@ -81,8 +81,20 @@ impl Glagol {
             title: title.to_string(),
             subtitle: subtitle.to_string(),
             offset_ms,
+            set_pause: false,
         })
         .await
+    }
+
+    /// Пауза штатного плеера: та же `audio_play`, но с `set_pause: true`.
+    pub fn try_pause_stream(&self, url: &str, title: &str, subtitle: &str, offset_ms: u64) {
+        let _ = self.tx.try_send(Cmd::AudioPlay {
+            url: url.to_string(),
+            title: title.to_string(),
+            subtitle: subtitle.to_string(),
+            offset_ms,
+            set_pause: true,
+        });
     }
 
     pub async fn stop(&self) -> Result<()> {
@@ -189,9 +201,9 @@ async fn actor(
                         Cmd::Pause => json!({"command": "pause"}),
                         Cmd::Resume => json!({"command": "play"}),
                         Cmd::Volume(v) => json!({"command": "setVolume", "volume": v}),
-                        Cmd::AudioPlay { url, title, subtitle, offset_ms } => json!({
+                        Cmd::AudioPlay { url, title, subtitle, offset_ms, set_pause } => json!({
                             "command": "externalCommandBypass",
-                            "data": audio_play_data(&url, &title, &subtitle, offset_ms),
+                            "data": audio_play_data(&url, &title, &subtitle, offset_ms, set_pause),
                         }),
                         Cmd::Send(p) => p,
                     };
@@ -366,7 +378,7 @@ fn next_id() -> String {
 }
 
 /// protobuf: `{1: "audio_play", 2: JSON{stream:{url,format,type,offset_ms},set_pause:false}}` → base64
-fn audio_play_data(url: &str, title: &str, subtitle: &str, offset_ms: u64) -> String {
+fn audio_play_data(url: &str, title: &str, subtitle: &str, offset_ms: u64, set_pause: bool) -> String {
     let mut stream = json!({
         "url": url,
         "format": "MP3",          // прошивка требует именно MP3, кодек определяет сама (FLAC тоже играет)
@@ -379,7 +391,9 @@ fn audio_play_data(url: &str, title: &str, subtitle: &str, offset_ms: u64) -> St
     if !subtitle.is_empty() {
         stream["subtitle"] = json!(subtitle);
     }
-    let payload = json!({ "stream": stream, "set_pause": false }).to_string();
+    // Пауза работает только так: в ТОЙ ЖЕ команде приходит поток и set_pause=true.
+    // Отдельная команда `pause` у станции игнорируется (проверено: звук продолжается).
+    let payload = json!({ "stream": stream, "set_pause": set_pause }).to_string();
     let mut raw = Vec::new();
     pb_string(&mut raw, 1, "audio_play");
     pb_string(&mut raw, 2, &payload);

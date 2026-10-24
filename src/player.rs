@@ -494,10 +494,24 @@ impl Player {
 
     /// Пауза через SIGSTOP: оба процесса замирают, позиция не теряется.
     pub fn pause(&mut self) -> Result<()> {
-        if let Some(st) = &self.station {
-            st.gl.try_pause();
-            // фиксируем секунду паузы: счётчик после resume пойдёт ровно отсюда
+        if self.station.is_some() {
             let cur = self.progress_ms.load(Ordering::Relaxed);
+            let file = self.file.clone();
+            let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
+            let artist = self.current.as_ref().map(|t| t.artists.clone()).unwrap_or_default();
+            if let (Some(st), Some(file)) = (self.station.as_ref(), file) {
+                let name = std::path::Path::new(&file)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    // отдельная команда `pause` её плеером игнорируется — пауза приходит
+                    // вместе с потоком: `audio_play` + `set_pause: true`
+                    let url = st.src.url(&st.host, &name, crate::glagol::now_ms());
+                    st.gl.try_pause_stream(&url, &title, &artist, cur);
+                }
+            }
+            // фиксируем секунду паузы: счётчик после resume пойдёт ровно отсюда
             self.frozen_ms.store(cur.max(1), Ordering::Relaxed);
             self.paused = true;
             return Ok(());
@@ -512,6 +526,10 @@ impl Player {
     }
 
     pub fn resume(&mut self) -> Result<()> {
+        if self.station.is_some() && (self.current.is_none() || self.file.is_none()) {
+            // после полной остановки продолжать нечего — иначе возьмётся чужой трек
+            return Err(anyhow!("нечего продолжать: трек остановлен"));
+        }
         if let Some(st) = &self.station {
             // см. unduck: `play` вернёт радио станции, поэтому переигрываем свой файл с позиции
             let gl = st.gl.clone();
