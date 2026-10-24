@@ -52,6 +52,10 @@ pub struct Player {
     /// Позиция, которую показывает станция: главный признак подмены. Если она отстаёт
     /// от нашей больше чем на несколько секунд — играет уже не наш файл.
     station_progress: Arc<std::sync::Mutex<f64>>,
+    /// Держим ли кольцо сами (зелёная волна) — включается на воспроизведении.
+    led_on: Arc<AtomicBool>,
+    /// Фаза волны, чтобы кадры шли по кругу.
+    led_phase: Arc<AtomicU64>,
 }
 
 /// Штатный плеер станции: свой HTTP-раздатчик и канал управления.
@@ -86,6 +90,33 @@ fn device_id_for_platform(platform: &str) -> String {
     v.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_string()
 }
 
+/// Кольцо подсветки: 89 пикселей по 4 байта (R,G,B,X) в /dev/fb0.
+/// Пишем сами только тогда, когда штатная подсветка выключена в приложении —
+/// иначе maind перерисовывает поверх.
+const LED_FB: &str = "/dev/fb0";
+const LED_PX: usize = 89;
+
+/// Один кадр зелёной волны. `phase` двигает её по кругу.
+fn led_frame(phase: f32) -> Vec<u8> {
+    let mut buf = vec![0u8; LED_PX * 4];
+    for i in 0..LED_PX {
+        let x = (i as f32 / LED_PX as f32) * std::f32::consts::TAU;
+        let v = ((x * 1.5 + phase).sin() * 0.5 + 0.5) * 150.0 + 45.0;
+        buf[i * 4] = 0;
+        buf[i * 4 + 1] = v as u8; // только зелёный канал
+        buf[i * 4 + 2] = 0;
+        buf[i * 4 + 3] = 0;
+    }
+    buf
+}
+
+fn led_write(bytes: &[u8]) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(LED_FB) {
+        let _ = f.write_all(bytes);
+    }
+}
+
 /// Сколько кадров MP3 в секунде при 44,1 кГц (кадр = 1152 сэмпла).
 const FRAMES_PER_SEC: f64 = 44100.0 / 1152.0;
 
@@ -109,6 +140,8 @@ impl Player {
             station_title: Arc::new(std::sync::Mutex::new(String::new())),
             station_duration: Arc::new(std::sync::Mutex::new(0.0)),
             station_progress: Arc::new(std::sync::Mutex::new(0.0)),
+            led_on: Arc::new(AtomicBool::new(false)),
+            led_phase: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -280,6 +313,7 @@ impl Player {
         self.live.store(true, Ordering::Relaxed);
         self.progress_ms.store(0, Ordering::Relaxed);
         self.start_epoch.store(crate::glagol::now_ms(), Ordering::Relaxed);
+        self.led_on.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -358,6 +392,20 @@ impl Player {
                 }
                 let pos = if st.progress > 0.5 { st.progress } else { elapsed };
                 prog.store((pos.max(0.0) * 1000.0) as u64, Ordering::Relaxed);
+            }
+        });
+
+        // Кольцо своё: пока штатная подсветка выключена в приложении, maind в /dev/fb0
+        // не пишет, и наши кадры держатся. Волна — только зелёная.
+        let on = self.led_on.clone();
+        let ph = self.led_phase.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                if on.load(Ordering::Relaxed) {
+                    let phase = (ph.fetch_add(1, Ordering::Relaxed) as f32) * 0.12;
+                    led_write(&led_frame(phase));
+                }
             }
         });
 
@@ -480,6 +528,8 @@ impl Player {
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(st) = &self.station {
             st.gl.stop().await.ok();
+            self.led_on.store(false, Ordering::Relaxed);
+            led_write(&[0u8; LED_PX * 4]);
             self.live.store(false, Ordering::Relaxed);
             self.current = None;
             self.paused = false;
@@ -589,6 +639,8 @@ impl Player {
             }
             // фиксируем секунду паузы: счётчик после resume пойдёт ровно отсюда
             self.frozen_ms.store(cur.max(1), Ordering::Relaxed);
+            self.led_on.store(false, Ordering::Relaxed);
+            led_write(&[0u8; LED_PX * 4]);
             self.paused = true;
             return Ok(());
         }
@@ -621,6 +673,7 @@ impl Player {
                 crate::glagol::now_ms().saturating_sub(offset_ms),
                 Ordering::Relaxed,
             );
+            self.led_on.store(true, Ordering::Relaxed);
             tokio::spawn(async move {
                 let name = std::path::Path::new(&file)
                     .file_name()
