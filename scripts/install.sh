@@ -119,7 +119,16 @@ case \"\$1\" in
   start)
     [ -x /data/local/bin/zvukd-start.sh ] && /data/local/bin/zvukd-start.sh
     if [ $VOICE_LINE = 1 ] && [ -x /data/local/bin/alice-voice.sh ]; then
-      start-stop-daemon -S -b -m -p /run/alice-voice.pid -x /bin/sh -- /data/local/bin/alice-voice.sh
+      # Одна копия: pid из файла должен принадлежать слушателю. Если он устарел и
+      # указывает на любой живой /bin/sh, start-stop-daemon ответит «/bin/sh is already
+      # running» и не запустит ничего, а следующая попытка поднимет вторую копию.
+      av_pid=\$(cat /run/alice-voice.pid 2>/dev/null)
+      if [ -n \"\$av_pid\" ] && grep -q alice-voice.sh /proc/\$av_pid/cmdline 2>/dev/null; then
+        :
+      else
+        rm -f /run/alice-voice.pid
+        start-stop-daemon -S -b -m -p /run/alice-voice.pid -x /bin/sh -- /data/local/bin/alice-voice.sh
+      fi
     fi
     ;;
   stop)
