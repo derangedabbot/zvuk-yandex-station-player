@@ -381,7 +381,9 @@ impl Api {
             .gql(
                 Q_ARTISTS,
                 "getArtists",
-                json!({ "ids": [id], "withReleases": true, "withPopTracks": false }),
+                // limit обязателен: по умолчанию сервер отдаёт 50 свежих релизов,
+                // и старые альбомы (например, «Радио Африка») в список не попадают
+                json!({ "ids": [id], "withReleases": true, "withPopTracks": false, "releasesLimit": 500 }),
             )
             .await?;
         let artist = v
