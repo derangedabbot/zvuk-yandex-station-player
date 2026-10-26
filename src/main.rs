@@ -71,6 +71,12 @@ struct Core {
     last_reassert: Option<std::time::Instant>,
     /// Мы поставили паузу из-за AirPlay (а не человек) — тогда и снимаем сами.
     airplay_paused: bool,
+    /// Прошлое состояние Алисы: нужен переход «говорит → молчит», чтобы вернуть наш трек.
+    prev_alice: String,
+    /// Момент, когда проверить, что играет станция после её ответа.
+    restore_check: Option<std::time::Instant>,
+    /// Когда последний раз возвращали трек после её речи (не чаще раза в 30 с).
+    last_restore: Option<std::time::Instant>,
     /// Когда последний раз переключали трек: защита от двойного перехода
     /// (автопереход по концу + голосовая команда «дальше» давали два «следующий» подряд).
     last_switch: Option<std::time::Instant>,
@@ -864,6 +870,9 @@ async fn run_daemon() -> Result<()> {
         saved_position: 0,
         playlist: None,
         last_reassert: None,
+        prev_alice: String::new(),
+        restore_check: None,
+        last_restore: None,
         airplay_paused: false,
         last_switch: None,
     };
@@ -961,6 +970,40 @@ async fn run_daemon() -> Result<()> {
                 if c.player.resume().is_ok() {
                     c.airplay_paused = false;
                     eprintln!("zvukd: AirPlay освободил звук — продолжаю");
+                }
+            }
+
+            // После ответа Алисы станция часто возвращает не наш поток, а свою музыку.
+            // Раньше мы «угадывали» подмену по названию и длительности и получали хаос;
+            // теперь смотрим в mediad.log на URI, который станция реально открыла,
+            // и возвращаем трек ОДИН раз, с паузой 30 с между попытками.
+            let st = c.player.alice_state();
+            if c.prev_alice == "2" && st != "2" {
+                c.restore_check =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(1500));
+            }
+            c.prev_alice = st;
+            if let Some(t) = c.restore_check {
+                if std::time::Instant::now() >= t {
+                    c.restore_check = None;
+                    let cooldown_ok = c
+                        .last_restore
+                        .map(|t| t.elapsed().as_secs() >= 30)
+                        .unwrap_or(true);
+                    if cooldown_ok
+                        && !ap
+                        && !c.player.paused
+                        && c.player.current.is_some()
+                        && !crate::player::Player::alice_music_request_recent()
+                        && c.player.station_took_over()
+                    {
+                        c.last_restore = Some(std::time::Instant::now());
+                        c.last_switch = Some(std::time::Instant::now());
+                        match c.player.reassert().await {
+                            Ok(_) => eprintln!("zvukd: после ответа Алисы вернул наш трек"),
+                            Err(e) => eprintln!("zvukd: вернуть трек не вышло: {e}"),
+                        }
+                    }
                 }
             }
 

@@ -215,6 +215,43 @@ impl Player {
         alive(&mut self.decoder) && alive(&mut self.output)
     }
 
+    /// Её состояние: «1» слушает, «2» говорит, «3» занята, иначе молчит.
+    pub fn alice_state(&self) -> String {
+        self.alice_state.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Недавно ли мы сами просили её включить музыку (кнопка «Моя волна» и подобное).
+    /// Тогда возвращать свой трек нельзя: она делает ровно то, о чём попросили.
+    pub fn alice_music_request_recent() -> bool {
+        const LOG: &str = "/data/local/tmp/alice-say.log";
+        let Ok(meta) = std::fs::metadata(LOG) else {
+            return false;
+        };
+        let Ok(modified) = meta.modified() else {
+            return false;
+        };
+        let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+            return false;
+        };
+        if age.as_secs() > 120 {
+            return false;
+        }
+        let Ok(text) = std::fs::read_to_string(LOG) else {
+            return false;
+        };
+        let tail: String = text
+            .chars()
+            .rev()
+            .take(2000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        ["включи", "волна", "музык", "плейлист", "поставь"]
+            .iter()
+            .any(|w| tail.contains(w))
+    }
+
     /// Станция играет не наш файл, а что-то своё (её поток после «продолжи»).
     /// Признак: она называет трек, и это не название нашего.
     pub fn station_took_over(&self) -> bool {
