@@ -559,6 +559,14 @@ impl Core {
                 Err(e) => Err(e),
             },
             "artist-albums" => Err(anyhow!("нужен id: artist-albums <id исполнителя>")),
+            "artist-tracks" if !rest.is_empty() => match self.api.artist_tracks(rest).await {
+                Ok(tracks) => Ok(serde_json::json!({
+                    "items": tracks.iter().map(|t| t.brief()).collect::<Vec<_>>()
+                })
+                .to_string()),
+                Err(e) => Err(e),
+            },
+            "artist-tracks" => Err(anyhow!("нужен id: artist-tracks <id исполнителя>")),
             "play-artist" if !rest.is_empty() => self.play_artist(rest).await,
             "play-artist" => Err(anyhow!("нужен id: play-artist <id исполнителя>")),
             "pause" => {
