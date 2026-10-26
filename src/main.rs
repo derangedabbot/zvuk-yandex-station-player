@@ -611,6 +611,60 @@ impl Core {
             }
             "jump" => Err(anyhow!("нужен номер: jump <номер>")),
             // убрать трек из очереди
+            // добавить в конец очереди (трек / весь альбом / популярные треки исполнителя)
+            "queue-add" if !rest.is_empty() => match self.api.track(rest).await {
+                Ok(t) => {
+                    let label = t.label();
+                    self.player.queue.push(t);
+                    self.save_state();
+                    Ok(format!("в очередь: {label} (теперь {})", self.player.queue.len()))
+                }
+                Err(e) => Err(e),
+            },
+            "queue-add" => Err(anyhow!("нужен id: queue-add <id трека>")),
+            "queue-add-album" if !rest.is_empty() => match self.api.release_tracks(rest).await {
+                Ok(tracks) => {
+                    let n = tracks.len();
+                    for t in tracks {
+                        self.player.queue.push(t);
+                    }
+                    self.save_state();
+                    Ok(format!("в очередь {n} трек(ов) альбома (теперь {})", self.player.queue.len()))
+                }
+                Err(e) => Err(e),
+            },
+            "queue-add-album" => Err(anyhow!("нужен id: queue-add-album <id альбома>")),
+            "queue-add-artist" if !rest.is_empty() => match self.api.artist_tracks(rest).await {
+                Ok(tracks) => {
+                    let n = tracks.len();
+                    for t in tracks {
+                        self.player.queue.push(t);
+                    }
+                    self.save_state();
+                    Ok(format!("в очередь {n} популярных трек(ов) (теперь {})", self.player.queue.len()))
+                }
+                Err(e) => Err(e),
+            },
+            "queue-add-artist" => Err(anyhow!("нужен id: queue-add-artist <id исполнителя>")),
+            // очистить очередь: текущий трек оставляем, чтобы музыка не оборвалась на полуслове
+            "queue-clear" => {
+                // иначе после очистки «поток»/плейлист тут же догрузит новую пачку
+                self.flow = false;
+                self.playlist = None;
+                let current = self.player.current.clone();
+                let mut q: Vec<crate::api::Track> = Vec::new();
+                if let Some(t) = current {
+                    q.push(t);
+                }
+                let keep = q.len();
+                self.player.set_queue(q);
+                self.save_state();
+                if keep > 0 {
+                    Ok("очередь очищена, играет текущий трек".into())
+                } else {
+                    Ok("очередь очищена".into())
+                }
+            }
             "queue-del" if !rest.is_empty() => {
                 let len = self.player.queue.len();
                 let parsed: Result<usize, _> = rest.trim().parse();
