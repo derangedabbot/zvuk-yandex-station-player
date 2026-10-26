@@ -128,8 +128,11 @@ fn led_level(alice: &str, any_sound: bool, t: f32) -> i32 {
     }
 }
 
-/// Занят ли звук AirPlay: ищем установленное соединение на порту 7000 (0x1B58).
-/// Порт слушает shairport-sync; пока сессия жива, устройство принадлежит ей.
+/// Занят ли звук AirPlay: ищем установленное соединение на порту приёмника.
+/// До shairport-sync 5.6 AirPlay 2 слушал фиксированный 7000 (0x1B58) и не смотрел на
+/// `port` из конфига; в 5.6+ берётся порт из `shairport-sync.conf` (у нас 5000, 0x1388).
+/// Проверяем оба: иначе после обновления приёмника арбитраж молча перестаёт работать —
+/// наш плеер продолжает играть, приёмник получает EBUSY, AirPlay звучит в тишину.
 pub fn airplay_active() -> bool {
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
         let Ok(text) = std::fs::read_to_string(table) else { continue };
@@ -139,7 +142,9 @@ pub fn airplay_active() -> bool {
                 continue;
             }
             let port = f[1].rsplit(':').next().unwrap_or("");
-            if port.eq_ignore_ascii_case("1B58") && f[3] == "01" {
+            if (port.eq_ignore_ascii_case("1B58") || port.eq_ignore_ascii_case("1388"))
+                && f[3] == "01"
+            {
                 return true;
             }
         }
