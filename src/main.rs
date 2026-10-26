@@ -585,6 +585,42 @@ impl Core {
                 }
                 res
             }
+            // переход по очереди без замены самой очереди (клик по треку в панели)
+            "jump" if !rest.is_empty() => {
+                let len = self.player.queue.len();
+                let parsed: Result<usize, _> = rest.trim().parse();
+                let n = match parsed {
+                    Ok(v) if v >= 1 && v <= len => v,
+                    Ok(_) => return format!("ERR в очереди {len} треков"),
+                    Err(_) => return "ERR нужен номер: jump <номер>".into(),
+                };
+                {
+                    self.player.idx = n - 1;
+                    self.last_switch = Some(std::time::Instant::now());
+                    let t = self.player.queue[n - 1].clone();
+                    self.play_track(t).await
+                }
+            }
+            "jump" => Err(anyhow!("нужен номер: jump <номер>")),
+            // убрать трек из очереди
+            "queue-del" if !rest.is_empty() => {
+                let len = self.player.queue.len();
+                let parsed: Result<usize, _> = rest.trim().parse();
+                let n = match parsed {
+                    Ok(v) if v >= 1 && v <= len => v,
+                    Ok(_) => return format!("ERR в очереди {len} треков"),
+                    Err(_) => return "ERR нужен номер: queue-del <номер>".into(),
+                };
+                {
+                    self.player.queue.remove(n - 1);
+                    if self.player.idx >= n && self.player.idx > 0 {
+                        self.player.idx -= 1;
+                    }
+                    self.save_state();
+                    Ok(format!("убрал; в очереди {}", self.player.queue.len()))
+                }
+            }
+            "queue-del" => Err(anyhow!("нужен номер: queue-del <номер>")),
             "next" => {
                 self.last_switch = Some(std::time::Instant::now());
                 self.advance().await
