@@ -303,6 +303,14 @@ impl Player {
     /// Трек доиграл до конца — можно переходить к следующему.
     pub fn is_finished(&mut self) -> bool {
         if self.station.is_some() {
+            // Сразу после старта станция ещё отдаёт позицию ПРЕДЫДУЩЕГО трека: она бывает
+            // близка к концу, длительности совпадают — и новый трек тут же считался
+            // законченным. Отсюда «первый трек потока пропустился». Даём 4 секунды форы.
+            if let Some(t) = self.started_at {
+                if t.elapsed() < std::time::Duration::from_secs(4) {
+                    return false;
+                }
+            }
             let dur = self.duration_ms();
             if dur == 0 {
                 return false;
