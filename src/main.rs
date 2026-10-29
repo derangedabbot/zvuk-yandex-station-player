@@ -1105,6 +1105,12 @@ async fn run_daemon() -> Result<()> {
                 }
             }
 
+            // Самолечение зависшей позиции: иначе трек «никогда не кончается»
+            // и очередь стоит на месте (снаружи — «играет одна песня и всё»).
+            if c.player.heal_frozen() {
+                eprintln!("zvukd: позиция зависла — снял заморозку");
+            }
+
             let switch_ready = c
                 .last_switch
                 .map(|t| t.elapsed().as_secs() >= 3)

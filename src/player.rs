@@ -215,6 +215,25 @@ impl Player {
         alive(&mut self.decoder) && alive(&mut self.output)
     }
 
+    /// Позиция иногда «замерзает»: пауза выставила frozen_ms, а снятия не случилось
+    /// (её состояние не вернулось в 0, или пауза пришла в самом начале трека).
+    /// Тогда прогресс стоит, трек никогда не считается законченным, и очередь
+    /// не идёт дальше — снаружи это «играет одна песня и следующая не включается».
+    /// Лечим сами: если frozen есть, а трек формально не на паузе — снимаем.
+    pub fn heal_frozen(&mut self) -> bool {
+        if self.station.is_none() || self.paused {
+            return false;
+        }
+        let f = self.frozen_ms.swap(0, Ordering::Relaxed);
+        if f == 0 {
+            return false;
+        }
+        let pos = self.progress_ms.load(Ordering::Relaxed);
+        self.start_epoch
+            .store(crate::glagol::now_ms().saturating_sub(pos), Ordering::Relaxed);
+        true
+    }
+
     /// Её состояние: «1» слушает, «2» говорит, «3» занята, иначе молчит.
     pub fn alice_state(&self) -> String {
         self.alice_state.lock().map(|s| s.clone()).unwrap_or_default()
