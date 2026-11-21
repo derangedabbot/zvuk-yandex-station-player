@@ -234,6 +234,18 @@ impl Player {
         true
     }
 
+    /// Играем ли МЫ, а не её собственный поток. Нужно, чтобы её музыка не считалась
+    /// нашей: иначе на её реплику «дальше» мы ставили на паузу ЕЁ трек.
+    pub fn is_ours(&mut self) -> bool {
+        if self.station.is_none() {
+            return self.is_alive();
+        }
+        if self.current.is_none() {
+            return false;
+        }
+        !self.station_took_over()
+    }
+
     /// Её состояние: «1» слушает, «2» говорит, «3» занята, иначе молчит.
     pub fn alice_state(&self) -> String {
         self.alice_state.lock().map(|s| s.clone()).unwrap_or_default()

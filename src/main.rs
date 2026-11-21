@@ -570,11 +570,16 @@ impl Core {
             "play-artist" if !rest.is_empty() => self.play_artist(rest).await,
             "play-artist" => Err(anyhow!("нужен id: play-artist <id исполнителя>")),
             "pause" => {
-                let r = self.player.pause().map(|_| "Пауза".to_string()).map_err(Into::into);
-                if r.is_ok() {
-                    led("stop");
+                // Её музыка играет — наша пауза остановила бы её же (команда уходит станции).
+                if self.player.current.is_some() && !self.player.is_ours() {
+                    Ok("играет её музыка — не вмешиваюсь".into())
+                } else {
+                    let r = self.player.pause().map(|_| "Пауза".to_string()).map_err(Into::into);
+                    if r.is_ok() {
+                        led("stop");
+                    }
+                    r
                 }
-                r
             }
             "resume" => {
                 let r = self.player.resume().map(|_| "Продолжаю".to_string()).map_err(Into::into);
@@ -684,8 +689,13 @@ impl Core {
             }
             "queue-del" => Err(anyhow!("нужен номер: queue-del <номер>")),
             "next" => {
-                self.last_switch = Some(std::time::Instant::now());
-                self.advance().await
+                // Играет её собственный трек — не переключаем и не забираем звук.
+                if self.player.current.is_some() && !self.player.is_ours() {
+                    Ok("играет её музыка — не вмешиваюсь".into())
+                } else {
+                    self.last_switch = Some(std::time::Instant::now());
+                    self.advance().await
+                }
             }
             // Вернуть наш файл на место после того, как её волна успела влезть:
             // переигрываем ТОТ ЖЕ трек с текущей секунды (не следующий).
@@ -1004,7 +1014,9 @@ async fn run_daemon() -> Result<()> {
                 2 => {
                     // она заговорила — освобождаем устройство, иначе её не слышно
                     c.resuming = true;
-                    if !c.flow_ducked && c.player.is_alive() && !c.player.paused {
+                    // Уступаем только свой трек: если у неё играет её музыка,
+                    // наши stop/audio_play её же и приостановят (жалоба «дальше» ставит на паузу).
+                    if !c.flow_ducked && c.player.is_ours() && !c.player.paused {
                         if c.player.duck().await {
                             led("stop");
                             c.flow_ducked = true;
