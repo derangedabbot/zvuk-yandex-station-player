@@ -1016,6 +1016,7 @@ async fn run_daemon() -> Result<()> {
                     c.resuming = true;
                     // Уступаем только свой трек: если у неё играет её музыка,
                     // наши stop/audio_play её же и приостановят (жалоба «дальше» ставит на паузу).
+                    eprintln!("zvukd: решаю про уступку — {}", c.player.debug_duck());
                     if !c.flow_ducked && c.player.is_ours() && !c.player.paused {
                         if c.player.duck().await {
                             led("stop");

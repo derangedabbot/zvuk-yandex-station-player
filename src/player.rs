@@ -234,6 +234,27 @@ impl Player {
         true
     }
 
+    /// Что плеер видит в момент решения (для лога): её трек, наша длительность, «наше ли это».
+    pub fn debug_duck(&self) -> String {
+        let theirs = self
+            .station_title
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let theirs_d = self.station_duration.lock().map(|d| *d).unwrap_or(0.0);
+        let ours = self
+            .current
+            .as_ref()
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let ours_d = (self.duration_ms() as f64) / 1000.0;
+        let prog = (self.progress_ms.load(Ordering::Relaxed) as f64) / 1000.0;
+        format!(
+            "её: «{theirs}» {theirs_d:.0}с, поз {prog:.0}с | наше: «{ours}» {ours_d:.0}с | paused={}",
+            self.paused
+        )
+    }
+
     /// Играем ли МЫ, а не её собственный поток. Нужно, чтобы её музыка не считалась
     /// нашей: иначе на её реплику «дальше» мы ставили на паузу ЕЁ трек.
     pub fn is_ours(&mut self) -> bool {
