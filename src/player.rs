@@ -249,10 +249,42 @@ impl Player {
             .unwrap_or_default();
         let ours_d = (self.duration_ms() as f64) / 1000.0;
         let prog = (self.progress_ms.load(Ordering::Relaxed) as f64) / 1000.0;
+        let conn = if self.station_plays_ours() { "есть" } else { "нет" };
         format!(
-            "её: «{theirs}» {theirs_d:.0}с, поз {prog:.0}с | наше: «{ours}» {ours_d:.0}с | paused={}",
+            "её: «{theirs}» {theirs_d:.0}с, поз {prog:.0}с | наше: «{ours}» {ours_d:.0}с | paused={} | наш поток={conn}",
             self.paused
         )
+    }
+
+    /// Играет ли станция наш раздатчик прямо сейчас: пока она проигрывает наш поток,
+    /// держит ESTABLISHED-соединение на его порт (проверено: наш трек — 1 соединение,
+    /// её «Моя волна» — 0). Это надёжнее названий: у её эфира и название пустое, и позиция врёт.
+    fn station_plays_ours(&self) -> bool {
+        use std::io::Read;
+        const PORT_HEX: &str = "223D"; // 8765
+        for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+            let mut s = String::new();
+            if std::fs::File::open(path)
+                .and_then(|mut f| f.read_to_string(&mut s))
+                .is_err()
+            {
+                continue;
+            }
+            for line in s.lines().skip(1) {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                if f.len() < 4 {
+                    continue;
+                }
+                // $4 — состояние TCP: 01 = ESTABLISHED; локальный порт — хвост $2 после ':'
+                if f[3] != "01" {
+                    continue;
+                }
+                if f[1].rsplit(':').next() == Some(PORT_HEX) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Играем ли МЫ, а не её собственный поток. Нужно, чтобы её музыка не считалась
@@ -264,7 +296,8 @@ impl Player {
         if self.current.is_none() {
             return false;
         }
-        !self.station_took_over()
+        // Главное: станция должна прямо сейчас тянуть наш поток (ESTABLISHED на порт раздатчика).
+        self.station_plays_ours() && !self.station_took_over()
     }
 
     /// Её состояние: «1» слушает, «2» говорит, «3» занята, иначе молчит.
